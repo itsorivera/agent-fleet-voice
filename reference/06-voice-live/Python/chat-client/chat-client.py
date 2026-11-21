@@ -6,6 +6,19 @@ from dotenv import load_dotenv
 import pyaudio
 
 # import namespaces
+from azure.identity.aio import AzureCliCredential
+from azure.ai.voicelive.aio import connect
+from azure.ai.voicelive.models import (
+    InputAudioFormat,
+    Modality,
+    OutputAudioFormat,
+    RequestSession,
+    ServerEventType,
+    AudioNoiseReduction,
+    AudioEchoCancellation,
+    AzureSemanticVadMultilingual,
+    AgentConfig
+) 
 
 
 
@@ -57,11 +70,13 @@ class VoiceAssistant:
     3. Start audio capture/playback
     4. Process events from the service
     """
-    
+
+    # The init function to initialize an object based on the class has already been implemented.
     def __init__(self, endpoint, credential, agent_config):
         self.endpoint = endpoint
         self.credential = credential
         self.agent_config = agent_config
+    
     async def start(self):
         """Start the voice assistant."""
         print("\n" + "=" * 60)
@@ -71,19 +86,31 @@ class VoiceAssistant:
         # Add your code in this try block!
         try:
             # STEP 1: Connect Azure VoiceLive to the agent
-
+            async with connect(
+                endpoint=self.endpoint,
+                credential=self.credential,
+                api_version="2026-01-01-preview",
+                agent_config=self.agent_config
+            ) as connection:
+                self.connection = connection
                 
                 # STEP 2: Initialize audio processor
-                
+                # The AudioProcessor is a utlility class to manage audio hardware I/O.
+                self.audio_processor = AudioProcessor(connection)
                 
                 # STEP 3: Configure the session
-                
+                # This code configures the session with the appropriate audio formats, conversational turn-detection semantics, and options to handle echos and background noise.
+                await self.setup_session()
                 
                 # STEP 4: Start audio systems
-                
+                # This code starts the audio processor so that it monitors the microphone for audio input and plays back audio output.
+                self.audio_processor.start_playback()
+                print("\n✅ Ready! Start speaking...")
+                print("Press Ctrl+C to exit\n")
                 
                 # STEP 5: Process events
-                
+                # This code runs the main loop to process events such as speech input, response output, and interruptions.
+                await self.process_events()
 
         
         finally:
