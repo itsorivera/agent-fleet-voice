@@ -24,4 +24,8 @@ dependencies = [
     "agent-framework-foundry==1.10.3",
     "azure-ai-projects>=2.3.0",
     "azure-ai-agents>=1.1.0",
+    "azure-ai-voicelive==1.2.0b4",
+    "dotenv>=0.9.9",
+    "aiohttp>=3.14.5",
+    "pyaudio>=0.2.14",
 ]
