@@ -95,7 +95,8 @@ def main() -> None:
     print(f"Proyecto: {endpoint}")
     print(f"Agente  : {args.agent}")
 
-    with AIProjectClient(endpoint=endpoint, credential=AzureCliCredential()) as project:
+    with AIProjectClient(endpoint=endpoint, 
+                         credential=AzureCliCredential()) as project:
         agent = project.agents.get(agent_name=args.agent)
         definition = agent.versions.latest.definition
 
@@ -107,8 +108,10 @@ def main() -> None:
 
         stop = threading.Event()
 
-        with project.voice_agents.realtime.connect(agent_name=args.agent) as conn, \
-             sd.RawOutputStream(samplerate=SAMPLE_RATE, channels=1, dtype="int16") as speaker:
+        with project.voice_agents.realtime.connect(
+            agent_name=args.agent) as conn, sd.RawOutputStream(samplerate=SAMPLE_RATE,
+                                                               channels=1,
+                                                               dtype="int16") as speaker:
 
             threading.Thread(target=stream_microphone, args=(conn, stop), daemon=True).start()
             print("\n🎧 Habla cuando quieras (Ctrl+C para salir).\n")
