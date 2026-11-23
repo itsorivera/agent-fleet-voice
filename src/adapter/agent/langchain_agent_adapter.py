@@ -1,5 +1,6 @@
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import END, START, MessagesState, StateGraph
+from langgraph.prebuilt import ToolNode, tools_condition
 from langchain_core.tools import BaseTool
 from typing import List
 from src.core.ports.agent_port import AgentPort
@@ -40,10 +41,33 @@ class LangChainAgentAdapter(AgentPort):
 
     workflow.add_node("agent", call_model)
     workflow.add_edge(START, "agent")
-    workflow.add_edge("agent", END)
+
+    if self.tools:
+        workflow.add_node("tools", ToolNode(self.tools))
+        # Si el modelo pidio tools -> ejecutarlas; si no -> terminar.
+        workflow.add_conditional_edges("agent", tools_condition)
+        # Tras ejecutar las tools, volver al modelo para que redacte la respuesta.
+        workflow.add_edge("tools", "agent")
+    else:
+        workflow.add_edge("agent", END)
 
     self.agent_graph_compiled = workflow.compile(checkpointer=checkpointer)
     return self.agent_graph_compiled
+
+  @staticmethod
+  def _extract_text(content) -> str:
+    """Normaliza el content de un mensaje (str o lista de bloques) a texto."""
+    if isinstance(content, str):
+      return content
+    if isinstance(content, list):
+      parts = []
+      for block in content:
+        if isinstance(block, str):
+          parts.append(block)
+        elif isinstance(block, dict) and block.get("type") == "text":
+          parts.append(block.get("text", ""))
+      return "\n".join(p for p in parts if p).strip()
+    return str(content)
 
   async def process_message(self,
                         message,
@@ -63,7 +87,8 @@ class LangChainAgentAdapter(AgentPort):
 
     if result and "messages" in result and len(result["messages"]) > 0:
       last_message = result["messages"][-1]
-      return {"response": last_message.content}
+      text = self._extract_text(last_message.content)
+      return {"response": text or "No response generated"}
         
     return {"response": "No response generated"}
 
