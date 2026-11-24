@@ -3,6 +3,7 @@ from fastapi.responses import JSONResponse
 import logging
 import os
 from src.adapter.rest.server_router import router as financial_fleet_agent_router
+from src.adapter.ws.router import router as voice_router
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger(__name__)
@@ -15,6 +16,7 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(financial_fleet_agent_router)
+    app.include_router(voice_router)
 
     @app.exception_handler(Exception)
     async def global_exception_handler(request, exc):
