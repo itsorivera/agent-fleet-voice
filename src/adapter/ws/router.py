@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 
 from src.adapter.ws.session import VoiceSession
 from src.config.dependency_container import get_voice_client_factory
-from src.core.ports.live_voice_port import AbstractVoiceClient, VoiceClientFactory
+from core.ports.live_voice_provider_port import AbstractVoiceClient, VoiceClientFactory
 
 router = APIRouter(prefix="/ws", tags=["voice"])
 
