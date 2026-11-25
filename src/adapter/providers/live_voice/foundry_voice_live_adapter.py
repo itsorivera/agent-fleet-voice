@@ -1,7 +1,5 @@
 """Azure AI Foundry Voice Agents realtime adapter.
-Targets Foundry agents with ``kind="voice"`` through their own realtime
-endpoint (``project.voice_agents.realtime.connect``). The agent owns voice,
-VAD, instructions and tools, so this adapter does not send ``session.update``.
+Production-ready: Reutiliza Project Client inyectado y maneja cancelación limpia.
 """
 
 from __future__ import annotations
@@ -9,23 +7,18 @@ from __future__ import annotations
 import base64
 import binascii
 import logging
-import os
 from collections.abc import AsyncGenerator, Mapping
 from typing import TYPE_CHECKING, Any
 
-from azure.ai.projects.aio import AIProjectClient
 from azure.ai.projects.models import RealtimeServerEventType
-from azure.identity.aio import AzureCliCredential
-
-from src.core.ports.live_voice_port import AbstractVoiceClient, VoiceEvent
+from core.ports.live_voice_provider_port import AbstractVoiceClient, VoiceEvent
 
 if TYPE_CHECKING:
+    from azure.ai.projects.aio import AIProjectClient
     from azure.ai.projects.aio.operations import (
         AsyncRealtimeConnection,
         AsyncRealtimeConnectionManager,
     )
-    from azure.core.credentials_async import AsyncTokenCredential
-
 
 logger = logging.getLogger(__name__)
 
@@ -50,10 +43,6 @@ _ERROR = RealtimeServerEventType.ERROR.value
 
 
 class FoundryVoiceLiveAdapter(AbstractVoiceClient):
-    """Async adapter for a Foundry voice agent (``kind="voice"``).
-
-    The adapter owns the project client and closes it in :meth:`close`.
-    """
 
     SAMPLE_RATE = 24_000
     CHANNELS = 1
@@ -62,45 +51,20 @@ class FoundryVoiceLiveAdapter(AbstractVoiceClient):
     def __init__(
         self,
         *,
-        agent_name: str | None = None,
-        endpoint: str | None = None,
-        credential: AsyncTokenCredential | None = None,
-        project_client: AIProjectClient | None = None,
-        allow_preview: bool = False,
+        project_client: AIProjectClient,
+        agent_name: str,
     ) -> None:
-        self.agent_name = agent_name or os.getenv("AZURE_VOICELIVE_AGENT_ID")
-        self.endpoint = (
-            endpoint
-            or os.getenv("PROJECT_ENDPOINT")
-            or os.getenv("FOUNDRY_PROJECT_ENDPOINT")
-        )
-        self.credential = credential
         self.project_client = project_client
-
-        if self.project_client is None:
-            self.credential = self.credential or AzureCliCredential()
-            self.project_client = AIProjectClient(
-                endpoint=self.endpoint,
-                credential=self.credential,
-                allow_preview=allow_preview,
-            )
+        self.agent_name = agent_name
 
         self._manager: AsyncRealtimeConnectionManager | None = None
         self._connection: AsyncRealtimeConnection | None = None
         self._closed = False
-
-    async def __aenter__(self) -> "FoundryVoiceLiveAdapter":
-        await self.connect()
-        return self
-
-    async def __aexit__(self, *exc: Any) -> None:
-        await self.close()
+        self._pending_audio_buffer = bytearray()
 
     async def connect(self) -> None:
-        """Open the realtime WebSocket against the voice agent."""
         if self._closed:
-            raise RuntimeError("This voice adapter is closed.")
-
+            raise RuntimeError("El adaptador ya ha sido cerrado.")
         if self._connection is not None:
             return
 
@@ -108,44 +72,61 @@ class FoundryVoiceLiveAdapter(AbstractVoiceClient):
             agent_name=self.agent_name
         )
         self._connection = await self._manager.__aenter__()
-        logger.info("Connected to Foundry voice agent %r.", self.agent_name)
+        logger.info("Sesión iniciada con Azure Foundry Agent: %s", self.agent_name)
 
     async def send_audio(self, pcm_chunk: bytes) -> None:
-        """Send raw PCM16 mono audio to the agent.
-
-        The SDK base64-encodes the payload before writing it to the WebSocket.
-        """
-        if not pcm_chunk:
+        if not pcm_chunk or self._closed:
             return
 
-        if len(pcm_chunk) % self.SAMPLE_WIDTH_BYTES:
-            raise ValueError("PCM16 chunks must contain whole 16-bit samples.")
+        conn = self._require_connection()
 
-        await self._require_connection().input_audio_buffer.append(audio=pcm_chunk)
+        # Manejo tolerante a fragmentación impar de PCM16
+        if self._pending_audio_buffer:
+            pcm_chunk = bytes(self._pending_audio_buffer) + pcm_chunk
+            self._pending_audio_buffer.clear()
+
+        remainder = len(pcm_chunk) % self.SAMPLE_WIDTH_BYTES
+        if remainder:
+            # Almacena el byte desalineado para el próximo paquete
+            self._pending_audio_buffer.extend(pcm_chunk[-remainder:])
+            pcm_chunk = pcm_chunk[:-remainder]
+
+        if pcm_chunk:
+            await conn.input_audio_buffer.append(audio=pcm_chunk)
 
     async def listen(self) -> AsyncGenerator[VoiceEvent, None]:
-        """Yield normalized events from the agent."""
-        async for event in self._require_connection():
-            normalized = self._normalize_event(event)
-            if normalized is not None:
-                yield normalized
+        conn = self._require_connection()
+        try:
+            async for event in conn:
+                normalized = self._normalize_event(event)
+                if normalized is not None:
+                    yield normalized
+        except Exception as exc:
+            # Si el socket cierra o se cancela la tarea, no relanzamos si estamos cerrando
+            if not self._closed:
+                logger.error("Error en streaming downstream de Foundry: %r", exc)
+                raise
 
     async def close(self) -> None:
-        """Close the realtime connection and the project client."""
         if self._closed:
             return
-
-        if self._manager is not None:
-            await self._manager.__aexit__(None, None, None)
-            self._manager = None
-            self._connection = None
-
-        await self.project_client.close()
         self._closed = True
 
+        if self._manager is not None:
+            try:
+                # Cierre ordenado del socket WebSocket del manager
+                await self._manager.__aexit__(None, None, None)
+            except Exception as e:
+                logger.warning("Error cerrando la conexión de Azure Realtime: %r", e)
+            finally:
+                self._manager = None
+                self._connection = None
+
+        # NO cerrar self.project_client aquí. Es un recurso compartido.
+
     def _require_connection(self) -> AsyncRealtimeConnection:
-        if self._connection is None or self._connection.closed:
-            raise RuntimeError("The voice connection is not open. Call connect() first.")
+        if self._connection is None or getattr(self._connection, "closed", False):
+            raise RuntimeError("Conexión realtime inactiva. Llama a connect() primero.")
         return self._connection
 
     def _normalize_event(self, event: Any) -> VoiceEvent | None:
