@@ -1,11 +1,16 @@
 from functools import lru_cache
 from typing import Optional
+import os
+from azure.ai.projects.aio import AIProjectClient
+from azure.identity.aio import DefaultAzureCredential
 from src.core.ports.llm_provider_port import LLMProviderPort
-from src.adapter.providers.aws_bedrock_provder_adapter import AWSBedrockProviderAdapter
+from adapter.providers.llm.aws_bedrock_provder_adapter import AWSBedrockProviderAdapter
 from src.core.ports.stm_port import STMProviderPort
 from src.adapter.memory.postgres_stm_adapter import PostgresSTMAdapter
 from src.core.ports.agent_port import AgentPort
 from src.adapter.agent.langchain_agent_adapter import LangChainAgentAdapter
+from core.ports.live_voice_provider_port import AbstractVoiceClient, VoiceClientFactory
+from src.adapter.providers.live_voice.foundry_voice_live_adapter import FoundryVoiceLiveAdapter
 from src.core.tools.local_tools import FINANCIAL_ANALYST_TOOLS
 
 class DependenciesContainer:
@@ -13,6 +18,7 @@ class DependenciesContainer:
         self.llm_provider: Optional[LLMProviderPort] = None
         self.stm: Optional[STMProviderPort] = None
         self.agent_1: Optional[AgentPort] = None
+        self._foundry_project_client: Optional[AIProjectClient] = None
 
     def get_llm_provider(self) -> LLMProviderPort:
         if self.llm_provider is None:
@@ -41,6 +47,33 @@ class DependenciesContainer:
             )
             await self.agent_1.create_agent()
         return self.agent_1
+
+    def _get_foundry_project_client(self) -> AIProjectClient:
+        """Singleton del cliente SDK de Azure Foundry."""
+        if self._foundry_project_client is None:
+            endpoint = os.getenv("FOUNDRY_PROJECT_ENDPOINT") or os.getenv("PROJECT_ENDPOINT")
+            if not endpoint:
+                raise ValueError("Variable de entorno FOUNDRY_PROJECT_ENDPOINT no configurada.")
+            
+            self._foundry_project_client = AIProjectClient(
+                endpoint=endpoint,
+                credential=DefaultAzureCredential(),
+            )
+        return self._foundry_project_client
+
+    def get_live_voice_factory(self) -> VoiceClientFactory:
+        """
+        Retorna un Callable (Factory) para crear una sesión de voz fresca por cada WebSocket.
+        Inyecta el AIProjectClient singleton compartido.
+        """
+        project_client = self._get_foundry_project_client()
+        agent_name = os.getenv("AZURE_VOICELIVE_AGENT_ID", "default-voice-agent")
+
+        # Retornamos una función lambda que instancia un nuevo adaptador efímero
+        return lambda: FoundryVoiceLiveAdapter(
+            project_client=project_client,
+            agent_name=agent_name
+        )
     
 
 @lru_cache()
@@ -50,3 +83,6 @@ def get_dependencies_container() -> DependenciesContainer:
 async def get_agent_1() -> AgentPort:
     dependecies = get_dependencies_container()
     return await dependecies.get_agent_1()
+
+def get_voice_client_factory() -> VoiceClientFactory:
+    return get_dependencies_container().get_live_voice_factory()
